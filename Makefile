@@ -5,7 +5,7 @@ CFLAGS = -Wall -Wextra -g -Iinclude -Ithird_party
 TARGET = gateway
 
 # 源文件
-SRCS = src/main.c
+SRCS = src/main.c third_party/cJSON.c third_party/sqlite3.c
 
 # 编译规则
 $(TARGET): $(SRCS)
