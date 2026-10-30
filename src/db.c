@@ -14,14 +14,15 @@ int db_init(const char *db_name)
 
 int db_insert_sensor(double temp, double hum, int ts) 
 {
-    const char *sql = "INSERT INTO sensor_data (temp, hum, ts) VALUES (?, ?, ?);";
+        // 关键节点：prepare -> bind -> step -> finalize
+    const char *sql = "INSERT INTO sensor_data (temp, hum) VALUES (?, ?);";
     sqlite3_stmt *stmt;
-    sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
-    sqlite3_bind_double(stmt, 1, temp);
-    sqlite3_bind_double(stmt, 2, hum);
-    sqlite3_bind_int(stmt, 3, ts);
-    int rc = sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
+    sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);//准备阶段
+    sqlite3_bind_double(stmt, 1, temp);            //绑定参数1
+    sqlite3_bind_double(stmt, 2, hum);             //绑定参数2
+    sqlite3_step(stmt);                            //执行
+    sqlite3_finalize(stmt);                        //销毁回收内存
+
     return rc == SQLITE_DONE ? 0 : -1;
 }
 
@@ -33,7 +34,7 @@ int db_get_latest(double *temp, double *hum, int *ts)
     int rc = sqlite3_step(stmt);
     if (rc == SQLITE_ROW) 
     {
-        *temp = sqlite3_column_double(stmt, 0); 
+        *temp = sqlite3_column_double(stmt, 0); //从第 0 列提取 double
         *hum  = sqlite3_column_double(stmt, 1); 
         *ts   = sqlite3_column_int(stmt, 2);    
         sqlite3_finalize(stmt);
