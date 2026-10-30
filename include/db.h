@@ -10,6 +10,8 @@ extern sqlite3 *g_db;
 int db_init(const char *db_name);
 // 插入一条数据
 int db_insert_sensor(double temp, double hum, int ts);
+// 查询最新的一条数据
+int db_get_latest(double *temp, double *hum, int *ts);
 // 关闭数据库
 void db_close();
 
