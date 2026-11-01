@@ -30,24 +30,25 @@ int serial_init(const char *device_path)
     options.c_lflag &= ~(ICANON | ECHO | ECHOE |ISIG);  // 设为 Raw 模式（极其重要：关掉规范模式，来啥收啥，不加工）
    
 
+    // ⚠️ 关键修复：之前只改了 options 结构体，但从没写回串口，等于白配。
+    // 必须 tcsetattr 才会让 115200/8N1/raw 真正生效
+    if (tcsetattr(serial_fd, TCSANOW, &options) != 0) {
+        perror("tcsetattr 失败");
+        close(serial_fd);
+        serial_fd = -1;
+        return -1;
+    }
+
     printf("串口 %s 初始化成功 (非阻塞)\n", device_path);
     return 0;
 }
 
-int serial_read(char *buffer, int max_len) 
-{
-    if (serial_fd < 0)
-    {
-        return -1;
-    } 
+int serial_read(char *buffer, int max_len) {
+    if (serial_fd < 0) return -1;
     int len = read(serial_fd, buffer, max_len - 1);
-    if (len > 0) 
-    {
-        buffer[len] = '\0';
-        return len;
-    }
+    if (len > 0) buffer[len] = '\0';
+    return len; // 👈 确保有这个 return
 }
-
 void serial_close() 
 {
     if (serial_fd >= 0) 
