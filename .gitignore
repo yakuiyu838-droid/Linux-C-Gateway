@@ -1,0 +1,15 @@
+# 编译产物
+*.o
+gateway
+test_app
+test_pool
+
+# 运行时生成的数据库文件
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# 编辑器
+.vscode/
+.idea/
