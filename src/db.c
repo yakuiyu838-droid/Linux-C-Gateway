@@ -3,9 +3,17 @@
 
 sqlite3 *g_db = NULL;
 
-int db_init(const char *db_name) 
+int db_init(const char *db_name)
 {
     if (sqlite3_open(db_name, &g_db) != SQLITE_OK) return -1;
+
+    // 关键：设 busy_timeout，否则并发读写会偶发 SQLITE_BUSY（database is locked）
+    // 比如网关在写库时，另一个进程/线程同时查库，没这个就直接报错返回
+    sqlite3_busy_timeout(g_db, 1000);
+
+    // WAL 模式：允许「一边写一边读」。采集写库时，查询方不用等写锁
+    sqlite3_exec(g_db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
+
     const char *sql = "CREATE TABLE IF NOT EXISTS sensor_data ("
                       "id INTEGER PRIMARY KEY AUTOINCREMENT, "
                       "temp REAL NOT NULL, hum REAL NOT NULL, ts INTEGER NOT NULL);";

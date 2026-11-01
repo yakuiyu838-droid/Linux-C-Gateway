@@ -8,14 +8,19 @@ SRCS = $(wildcard src/*.c) $(wildcard third_party/*.c)
 OBJS = $(SRCS:.c=.o)
 
 TARGET = gateway
+SIM = sensor_sim
 
 # 最终链接（把所有 .o 拼成可执行文件）
 $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) $^ -o $@
+
+# 传感器模拟器（独立程序，根目录单独编译，不混进 gateway）
+$(SIM): sensor_sim.c
+	$(CC) $(CFLAGS) sensor_sim.c -o $@
 
 # 自动推导规则：把所有的 .c 编译成 .o
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(OBJS) $(TARGET)
+	rm -f $(OBJS) $(TARGET) $(SIM)

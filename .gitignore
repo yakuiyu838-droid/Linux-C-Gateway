@@ -1,6 +1,7 @@
 # 编译产物
 *.o
 gateway
+sensor_sim
 test_app
 test_pool
 
