@@ -38,7 +38,8 @@ int main(int argc, char *argv[])
 
     printf("传感器模拟器启动：设备 %s，每 %d 秒发一帧 (Ctrl+C 退出)\n", dev, interval);
 
-    for (int i = 1; ; i++) {
+    for (int i = 1; ; i++) 
+    {
         // 模拟温度 20.0~34.9、湿度 40.0~79.9 的随机漂移
         double temp = 20.0 + (rand() % 1500) / 100.0;
         double hum  = 40.0 + (rand() % 4000) / 100.0;

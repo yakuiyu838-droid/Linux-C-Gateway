@@ -10,12 +10,38 @@
 #include <arpa/inet.h>
 #include <time.h>
 #include <signal.h>
+#include <stdint.h>
 
 #include "db.h"
 #include "serial.h"
 #include "threadpool.h"
+#include "cJSON.h" 
+#include "proto.h" 
 
-// 把 fd 设为非阻塞：ET 模式下必须，否则 read/recv 在没数据时会阻塞整个事件循环
+// ================= 数据接收缓冲区 =================
+char serial_rx_buf[4096];
+int serial_rx_len = 0;
+
+typedef struct 
+{
+    char recv_buf[4096];
+    int buf_len;
+} ClientContext;
+
+ClientContext clients[1024]; 
+
+// ================= 通用发送函数 =================
+void send_frame(int fd, uint8_t type, const char *json_str) 
+{
+    uint8_t frame[1024];
+    int total_len = proto_pack(type, json_str, frame);
+    if (total_len > 0) 
+    {
+        send(fd, frame, total_len, 0);
+    }
+}
+
+// ================= 辅助函数 =================
 int set_nonblocking(int fd)
 {
     int flags = fcntl(fd, F_GETFL, 0);
@@ -23,12 +49,11 @@ int set_nonblocking(int fd)
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
-// 初始化网络
 int init_server(int port)
 {
     int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     int opt = 1;
-    setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));//端口复用
+    setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -39,163 +64,183 @@ int init_server(int port)
     bind(listen_fd, (struct sockaddr*)&addr, sizeof(addr));
     listen(listen_fd, 10);
 
-    // 设置为非阻塞（ET 模式必须先非阻塞）
-    if (set_nonblocking(listen_fd) != 0) {
+    if (set_nonblocking(listen_fd) != 0) 
+    {
         perror("set_nonblocking");
         close(listen_fd);
         return -1;
     }
-
     return listen_fd;
 }
 
-// 定义一个结构体，用来打包后台任务需要的参数
-typedef struct {
+typedef struct 
+{
     int client_fd;
     char query[256];
 } QueryTaskArgs;
 
-// 这是真正在后台（Worker线程）执行的函数
+// ================= 线程池任务 =================
 void background_db_query(void *arg)
 {
     QueryTaskArgs *args = (QueryTaskArgs *)arg;
-
     double temp, hum;
     int ts;
-    char reply[512];
+    
+    cJSON *root = cJSON_CreateObject();
 
-    // 此时是在子线程里查库，绝不会卡住主线程！
-    if (db_get_latest(&temp, &hum, &ts) == 0)
+    if (db_get_latest(&temp, &hum, &ts) == 0) 
     {
-        sprintf(reply, "{\"temp\": %.1f, \"hum\": %.1f}\n", temp, hum);
-    }
-    else
+        cJSON_AddNumberToObject(root, "temp", temp);
+        cJSON_AddNumberToObject(root, "hum", hum);
+        cJSON_AddNumberToObject(root, "timestamp", ts);
+    } 
+    else 
     {
-        sprintf(reply, "{\"error\": \"no data\"}\n");
+        cJSON_AddStringToObject(root, "error", "no data");
     }
+    
+    char *json_str = cJSON_PrintUnformatted(root);
 
-    // 查完了，直接通过 socket 发给客户端
-    send(args->client_fd, reply, strlen(reply), 0);
+    // 发送类型 1：代表查询响应
+    send_frame(args->client_fd, 1, json_str); 
 
-    free(args); // 用完释放
+    cJSON_free(json_str);
+    cJSON_Delete(root);
+    free(args);
 }
 
+// ================= 主函数 =================
 int main()
 {
-    // 忽略 SIGPIPE：否则对已断开的客户端 send 会直接杀死整个进程
     signal(SIGPIPE, SIG_IGN);
 
-    // ⚠️ 注意这里：以后代码里永远写这个软链接名字！
-    if (serial_init("/tmp/gw_tty_read") != 0)
-    {
-        return -1;
-    }
-    if (db_init("gateway.db") != 0)
-    {
-        return -1;
-    }
+    if (serial_init("/tmp/gw_tty_read") != 0) return -1;
+    if (db_init("gateway.db") != 0) return -1;
 
     int listen_fd = init_server(8888);
     int epfd = epoll_create(1);
     struct epoll_event ev, events[10];
 
-    // 塞串口进 epoll（ET 边沿触发）
+    // 1. 注册串口
     ev.events = EPOLLIN | EPOLLET;
     ev.data.fd = serial_fd;
     epoll_ctl(epfd, EPOLL_CTL_ADD, serial_fd, &ev);
 
-    // 塞网络监听 fd 进 epoll
-    ev.events = EPOLLIN | EPOLLET;
+    // 2. 注册网络监听
+    ev.events = EPOLLIN;
     ev.data.fd = listen_fd;
     epoll_ctl(epfd, EPOLL_CTL_ADD, listen_fd, &ev);
 
-    printf("=== 网关终极版启动 ===\n");
-
-    // 创建线程池
+    printf("=== 网关终极版启动 (统一协议) ===\n");
     ThreadPool *pool = threadpool_create(3);
 
     while (1)
     {
-        // 1. 核心阻塞点！epoll_wait 参数：epfd（事件表），events（接收就绪事件数组），
-        //    10（最多一次取10个），-1（死等）。返回值 nfds：本次有几个 fd 有动静。
         int nfds = epoll_wait(epfd, events, 10, -1);
-        if (nfds < 0) {
-            // 被信号打断（比如 Ctrl+C），暂未实现优雅退出，先继续等
+        if (nfds < 0) 
+        {
             if (errno == EINTR) continue;
             perror("epoll_wait");
             break;
         }
 
-        // 2. 遍历所有有动静的 fd
         for (int i = 0; i < nfds; i++)
         {
             int fd = events[i].data.fd;
 
-            // ==========================================================
-            // 【分支 A】：串口有动静（传感器发数据来了）
-            // ==========================================================
-            if (fd == serial_fd)
+            // 【分支 A】：串口有动静
+            if (fd == serial_fd) 
             {
-                // ET 模式：必须循环读到 EAGAIN，否则一次就绪事件只读到一部分，
-                // 剩下的数据就丢了
-                for (;;)
+                for (;;) 
                 {
                     char buf[256];
                     int len = serial_read(buf, sizeof(buf));
-                    if (len < 0) {
-                        if (errno == EAGAIN || errno == EWOULDBLOCK) break; // 读完了
+                    if (len < 0) 
+                    {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) break;
                         perror("串口读出错");
                         break;
                     }
                     if (len == 0) break;
 
-                    printf("【串口采集】: %s", buf);
-                    double temp, hum;
-                    int ts = (int)time(NULL); // 获取当前系统时间戳
-
-                    // 用 sscanf 把 "28.5,65.0" 这种字符串精准剥离成两个 double
-                    if (sscanf(buf, "%lf,%lf", &temp, &hum) == 2)
+                    if (serial_rx_len + len > (int)sizeof(serial_rx_buf)) 
                     {
-                        // 存入数据库 (底层调用 sqlite3_prepare -> bind -> step)
-                        db_insert_sensor(temp, hum, ts);
-                        printf("  -> 已存入数据库\n");
+                        serial_rx_len = 0; 
+                    }
+                    memcpy(serial_rx_buf + serial_rx_len, buf, len);
+                    serial_rx_len += len;
+
+                    int offset = 0;
+                    while (serial_rx_len - offset > 0) 
+                    {
+                        uint8_t type;
+                        char json_payload[1024];
+                        int json_len;
+                        
+                        int res = proto_unpack((uint8_t *)(serial_rx_buf + offset), serial_rx_len - offset, &type, (uint8_t *)json_payload, &json_len);
+                        
+                        if (res > 0) 
+                        {
+                            printf("【串口拆包】Type: %d, JSON: %s\n", type, json_payload);
+                            
+                            cJSON *root = cJSON_Parse(json_payload);
+                            if (root) 
+                            {
+                                cJSON *temp_node = cJSON_GetObjectItem(root, "temp");
+                                cJSON *hum_node = cJSON_GetObjectItem(root, "hum");
+                                if (temp_node && hum_node) 
+                                {
+                                    double temp = temp_node->valuedouble;
+                                    double hum = hum_node->valuedouble;
+                                    db_insert_sensor(temp, hum, (int)time(NULL));
+                                    printf("  -> 已存入数据库\n");
+                                }
+                                cJSON_Delete(root);
+                            }
+                            offset += res;
+                        } 
+                        else if (res == -1) { break; } 
+                        else if (res == -2) { serial_rx_len = 0; break; }
+                    }
+
+                    if (offset > 0 && offset < serial_rx_len) 
+                    {
+                        memmove(serial_rx_buf, serial_rx_buf + offset, serial_rx_len - offset);
+                        serial_rx_len -= offset;
+                    } else if (offset == serial_rx_len) {
+                        serial_rx_len = 0; 
                     }
                 }
             }
-
-            // ==========================================================
-            // 【分支 B】：网络监听 fd 有动静（新客户端连进来）
-            // ==========================================================
+            
+            // 【分支 B】：新客户端连进来
             else if (fd == listen_fd)
             {
-                // ET 模式：可能同时有多个连接，循环 accept 直到 EAGAIN
                 for (;;)
                 {
                     int c_fd = accept(listen_fd, NULL, NULL);
-                    if (c_fd < 0) {
-                        if (errno == EAGAIN || errno == EWOULDBLOCK) break; // 没有新连接了
+                    if (c_fd < 0) 
+                    {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) break; 
                         perror("accept");
                         break;
                     }
 
-                    // ⚠️ 关键：客户端 fd 必须设非阻塞，否则 ET 模式下 recv 会卡死事件循环
                     set_nonblocking(c_fd);
-
                     printf("【网络】客户端接入 fd=%d\n", c_fd);
 
-                    // 🚨 极其关键：新接入的客户端 fd 必须注册进 epoll，否则它发消息 epoll 不理
-                    ev.events = EPOLLIN | EPOLLET;
+                    clients[c_fd].buf_len = 0;
+                    memset(clients[c_fd].recv_buf, 0, sizeof(clients[c_fd].recv_buf));
+
+                    ev.events = EPOLLIN ;
                     ev.data.fd = c_fd;
                     epoll_ctl(epfd, EPOLL_CTL_ADD, c_fd, &ev);
                 }
             }
 
-            // ==========================================================
-            // 【分支 C】：已连接的客户端发消息 / 断开
-            // ==========================================================
+            // 【分支 C】：已连接的客户端发消息
             else
             {
-                // ET 模式：循环 recv 直到 EAGAIN，把缓冲区一次读干净
                 for (;;)
                 {
                     char buf[256];
@@ -203,38 +248,69 @@ int main()
 
                     if (len > 0)
                     {
-                        buf[len] = '\0';
-                        // 客户端发的数据通常带 \r\n，用 strcspn 找到并替换成 \0 去掉换行
-                        buf[strcspn(buf, "\r\n")] = '\0';
-                        printf("【网络请求】: 收到指令 '%s'\n", buf);
+                        // 👈 这里已经把多余的那个 if 删了，恢复正常逻辑
+                        printf("📥 [网络调试] recv 实际收到 %d 字节\n", len); 
+                        
+                        ClientContext *ctx = &clients[fd];
+                        
+                        if (ctx->buf_len + len > (int)sizeof(ctx->recv_buf))
+                        {
+                            ctx->buf_len = 0; 
+                        }
+                        memcpy(ctx->recv_buf + ctx->buf_len, buf, len);
+                        ctx->buf_len += len;
 
-                        // ⚠️ 核心改造：不自己查库，而是打包参数丢进线程池！
-                        QueryTaskArgs *args = (QueryTaskArgs *)malloc(sizeof(QueryTaskArgs));
-                        if (args != NULL) {
-                            args->client_fd = fd;
-                            strcpy(args->query, buf);
-                            // 任务扔进线程池，主线程立刻回去处理下一个 epoll 事件
-                            threadpool_add_task(pool, background_db_query, args);
+                        int offset = 0;
+                        while (ctx->buf_len - offset > 0) 
+                        {
+                            uint8_t type;
+                            char json_payload[1024];
+                            int json_len;
+                            
+                            int res = proto_unpack((uint8_t *)(ctx->recv_buf + offset), ctx->buf_len - offset, &type, (uint8_t *)json_payload, &json_len);
+                            
+                            if (res > 0) 
+                            {
+                                printf("【网络拆包】Type: %d, JSON: %s\n", type, json_payload);
+                                
+                                QueryTaskArgs *args = (QueryTaskArgs *)malloc(sizeof(QueryTaskArgs));
+                                if (args != NULL) 
+                                {
+                                    args->client_fd = fd;
+                                    strcpy(args->query, json_payload);
+                                    threadpool_add_task(pool, background_db_query, args);
+                                }
+                                offset += res;
+                            } 
+                            else if (res == -1) { break; } 
+                            else if (res == -2) { ctx->buf_len = 0; break; }
+                        }
+
+                        if (offset > 0 && offset < ctx->buf_len) 
+                        {
+                            memmove(ctx->recv_buf, ctx->recv_buf + offset, ctx->buf_len - offset);
+                            ctx->buf_len -= offset;
+                        } 
+                        else if (offset == ctx->buf_len) 
+                        {
+                            ctx->buf_len = 0;
                         }
                     }
-                    // len == 0：客户端正常关闭（close/fin）
                     else if (len == 0)
                     {
-                        // 1. 从 epoll 监控树上摘除
                         epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
-                        // 2. 关闭 fd，释放资源
                         close(fd);
+                        clients[fd].buf_len = 0;
                         printf("【网络】客户端 fd=%d 断开\n", fd);
                         break;
                     }
-                    // len < 0：要区分「暂时没数据」和「真出错」
                     else
                     {
-                        if (errno == EAGAIN || errno == EWOULDBLOCK) break; // 数据读完，正常
-                        if (errno == EINTR) continue;                       // 被信号打断，继续读
-                        // 其他错误：真出错，当断开处理
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                        if (errno == EINTR) continue;
                         epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
                         close(fd);
+                        clients[fd].buf_len = 0;
                         printf("【网络】客户端 fd=%d 出错断开\n", fd);
                         break;
                     }
@@ -243,7 +319,6 @@ int main()
         }
     }
 
-    // 清理（等以后做了优雅退出，这里才会真正走到）
     threadpool_destroy(pool);
     db_close();
     serial_close();
