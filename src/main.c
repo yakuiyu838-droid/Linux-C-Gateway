@@ -28,12 +28,45 @@ int  serial_rx_len = 0;
 
 typedef struct
 {
+    int  fd;             // 该槽位对应的连接 fd，-1 表示空槽
     char recv_buf[4096];
     int  buf_len;
     int  subscribed;    // 1 = 该客户端订阅了周期推送
 } ClientContext;
 
 ClientContext clients[MAX_CLIENTS];
+
+// ================= 客户端槽位管理 =================
+// 不能拿 fd 直接当数组下标：Linux 的 fd 会一直往上长，连接数一多 fd 超过
+// MAX_CLIENTS 就会数组越界。所以用「槽位」存客户端，槽位里记下 fd，再按 fd 反查。
+static ClientContext *find_client(int fd)
+{
+    for (int i = 0; i < MAX_CLIENTS; i++)
+        if (clients[i].fd == fd)
+            return &clients[i];
+    return NULL;
+}
+
+static ClientContext *alloc_client(int fd)
+{
+    for (int i = 0; i < MAX_CLIENTS; i++)
+    {
+        if (clients[i].fd == -1)
+        {
+            memset(&clients[i], 0, sizeof(clients[i]));
+            clients[i].fd = fd;
+            return &clients[i];
+        }
+    }
+    return NULL;   // 连接数打满
+}
+
+static void free_client(ClientContext *ctx)
+{
+    ctx->fd = -1;
+    ctx->buf_len = 0;
+    ctx->subscribed = 0;
+}
 
 // ================= 通用发送函数 =================
 void send_frame(int fd, uint8_t type, const char *json_str)
@@ -164,9 +197,9 @@ void push_latest_to_subscribers(void)
 
     for (int i = 0; i < MAX_CLIENTS; i++)
     {
-        if (clients[i].subscribed)
+        if (clients[i].fd != -1 && clients[i].subscribed)
         {
-            send_frame(i, TYPE_SENSOR_DATA, str);   // 推送用「传感器数据」帧
+            send_frame(clients[i].fd, TYPE_SENSOR_DATA, str);   // 推送用「传感器数据」帧
         }
     }
 
@@ -207,6 +240,8 @@ int main()
 
     printf("=== 网关启动（Phase 2：协议 + 查询 + 订阅推送） ===\n");
     ThreadPool *pool = threadpool_create(3);
+
+    for (int i = 0; i < MAX_CLIENTS; i++) clients[i].fd = -1;   // 初始化客户端槽位
 
     while (1)
     {
@@ -304,9 +339,13 @@ int main()
                     set_nonblocking(c_fd);
                     printf("【网络】客户端接入 fd=%d\n", c_fd);
 
-                    clients[c_fd].buf_len = 0;
-                    clients[c_fd].subscribed = 0;
-                    memset(clients[c_fd].recv_buf, 0, sizeof(clients[c_fd].recv_buf));
+                    ClientContext *ctx = alloc_client(c_fd);
+                    if (ctx == NULL)
+                    {
+                        fprintf(stderr, "【网络】连接数已满，拒绝 fd=%d\n", c_fd);
+                        close(c_fd);
+                        continue;
+                    }
 
                     ev.events = EPOLLIN | EPOLLET;
                     ev.data.fd = c_fd;
@@ -325,6 +364,15 @@ int main()
             // 【分支 D】已连接的客户端发消息
             else
             {
+                ClientContext *ctx = find_client(fd);
+                if (ctx == NULL)
+                {
+                    // 防御性兜底：fd 既然在 epoll 里，就该有对应槽位
+                    epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
+                    close(fd);
+                    continue;
+                }
+
                 for (;;)
                 {
                     char buf[256];
@@ -332,7 +380,6 @@ int main()
 
                     if (len > 0)
                     {
-                        ClientContext *ctx = &clients[fd];
 
                         if (ctx->buf_len + len > (int)sizeof(ctx->recv_buf))
                         {
@@ -399,8 +446,7 @@ int main()
                     {
                         epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
                         close(fd);
-                        clients[fd].buf_len = 0;
-                        clients[fd].subscribed = 0;
+                        free_client(ctx);
                         printf("【网络】客户端 fd=%d 断开\n", fd);
                         break;
                     }
@@ -410,8 +456,7 @@ int main()
                         if (errno == EINTR) continue;
                         epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
                         close(fd);
-                        clients[fd].buf_len = 0;
-                        clients[fd].subscribed = 0;
+                        free_client(ctx);
                         printf("【网络】客户端 fd=%d 出错断开\n", fd);
                         break;
                     }
