@@ -32,7 +32,8 @@ int serial_init(const char *device_path)
 
     // ⚠️ 关键修复：之前只改了 options 结构体，但从没写回串口，等于白配。
     // 必须 tcsetattr 才会让 115200/8N1/raw 真正生效
-    if (tcsetattr(serial_fd, TCSANOW, &options) != 0) {
+    if (tcsetattr(serial_fd, TCSANOW, &options) != 0) 
+    {
         perror("tcsetattr 失败");
         close(serial_fd);
         serial_fd = -1;
@@ -43,7 +44,8 @@ int serial_init(const char *device_path)
     return 0;
 }
 
-int serial_read(char *buffer, int max_len) {
+int serial_read(char *buffer, int max_len) 
+{
     if (serial_fd < 0) return -1;
     int len = read(serial_fd, buffer, max_len - 1);
     if (len > 0) buffer[len] = '\0';

@@ -2,7 +2,8 @@
 #define DB_H
 
 #include "sqlite3.h"
-
+// 查询历史数据，返回 JSON 数组字符串
+int db_get_history(int limit, char *out_json, int max_len);
 // 声明全局数据库句柄，让别的文件也能用
 extern sqlite3 *g_db;
 
