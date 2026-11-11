@@ -18,7 +18,7 @@ static int sock;
 // 返回 >0 = 帧长度；<0 = 出错或对端断开
 static int recv_frame(uint8_t *type, char *json_payload, int *json_len)
 {
-    static uint8_t buf[4096];
+    static uint8_t buf[4096]; 
     static int buf_len = 0;
 
     while (1)

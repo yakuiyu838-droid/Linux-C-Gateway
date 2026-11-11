@@ -27,7 +27,8 @@
 #define MAX_PAYLOAD 1024
 
 #pragma pack(push, 1)
-typedef struct {
+typedef struct 
+{
     uint8_t  magic[2];   // 魔数 0xA5 0x5A
     uint8_t  version;    // 协议版本 0x01
     uint8_t  type;       // 指令类型

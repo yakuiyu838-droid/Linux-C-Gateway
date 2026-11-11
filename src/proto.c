@@ -34,8 +34,8 @@ int proto_pack(uint8_t type, const char *json_payload, uint8_t *out_buf)
     header->magic[1]    =   PROTO_MAGIC_1;  // 贴上防伪标识 5A
     header->version     =   PROTO_VERSION;  // 填上版本号
     header->type        =   type;           // 填上货物号
-    // 网络字节序（大端），小端变大端
-    header->len         =   htons((uint16_t)json_len);
+    
+    header->len         =   htons((uint16_t)json_len);// 网络字节序（大端），小端变大端
     // out_buf + HEADER_SIZE 意思是跳过已经被占用的 6 个字节，把 JSON 稳稳地拷贝到快递单的后面。
     memcpy(out_buf + HEADER_SIZE, json_payload, json_len);
     // 贴防伪封条

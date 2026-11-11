@@ -18,7 +18,8 @@ int main(int argc, char *argv[])
     int         interval = argc > 2 ? atoi(argv[2]) : 2;
 
     int fd = open(dev, O_RDWR | O_NOCTTY);
-    if (fd < 0) {
+    if (fd < 0) 
+    {
         perror("模拟器打开串口失败");
         return -1;
     }

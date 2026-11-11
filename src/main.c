@@ -37,8 +37,6 @@ typedef struct
 ClientContext clients[MAX_CLIENTS];
 
 // ================= 客户端槽位管理 =================
-// 不能拿 fd 直接当数组下标：Linux 的 fd 会一直往上长，连接数一多 fd 超过
-// MAX_CLIENTS 就会数组越界。所以用「槽位」存客户端，槽位里记下 fd，再按 fd 反查。
 static ClientContext *find_client(int fd)
 {
     for (int i = 0; i < MAX_CLIENTS; i++)
@@ -111,16 +109,16 @@ int init_server(int port)
     return listen_fd;
 }
 
-// 周期定时器：每 interval_sec 秒触发一次，用来给订阅客户端推最新数据
+// 周期定时器
 int init_timer(int interval_sec)
 {
     int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
     if (tfd < 0) { perror("timerfd_create"); return -1; }
 
     struct itimerspec its;
-    its.it_interval.tv_sec  = interval_sec;   // 周期：每隔 interval_sec 秒触发一次
+    its.it_interval.tv_sec  = interval_sec;
     its.it_interval.tv_nsec = 0;
-    its.it_value.tv_sec     = interval_sec;   // 首次触发：interval_sec 秒后
+    its.it_value.tv_sec     = interval_sec;
     its.it_value.tv_nsec    = 0;
 
     if (timerfd_settime(tfd, 0, &its, NULL) != 0)
@@ -137,10 +135,9 @@ typedef struct
 {
     int     client_fd;
     uint8_t type;
-    char    query[256];     // 请求里的 JSON 参数（比如历史查询的 limit）
+    char    query[256];
 } QueryTaskArgs;
 
-// 后台查库：查最新 / 查历史，把结果打包发回客户端
 void background_db_query(void *arg)
 {
     QueryTaskArgs *args = (QueryTaskArgs *)arg;
@@ -187,7 +184,7 @@ void background_db_query(void *arg)
 void push_latest_to_subscribers(void)
 {
     double temp, hum; int ts;
-    if (db_get_latest(&temp, &hum, &ts) != 0) return;   // 库里还没数据，跳过
+    if (db_get_latest(&temp, &hum, &ts) != 0) return;
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddNumberToObject(root, "temp", temp);
@@ -199,7 +196,7 @@ void push_latest_to_subscribers(void)
     {
         if (clients[i].fd != -1 && clients[i].subscribed)
         {
-            send_frame(clients[i].fd, TYPE_SENSOR_DATA, str);   // 推送用「传感器数据」帧
+            send_frame(clients[i].fd, TYPE_SENSOR_DATA, str);
         }
     }
 
@@ -220,17 +217,14 @@ int main()
     int epfd = epoll_create(1);
     struct epoll_event ev, events[16];
 
-    // 1. 注册串口
     ev.events = EPOLLIN | EPOLLET;
     ev.data.fd = serial_fd;
     epoll_ctl(epfd, EPOLL_CTL_ADD, serial_fd, &ev);
 
-    // 2. 注册网络监听
     ev.events = EPOLLIN | EPOLLET;
     ev.data.fd = listen_fd;
     epoll_ctl(epfd, EPOLL_CTL_ADD, listen_fd, &ev);
 
-    // 3. 注册周期推送定时器
     if (timer_fd >= 0)
     {
         ev.events = EPOLLIN | EPOLLET;
@@ -241,7 +235,7 @@ int main()
     printf("=== 网关启动（Phase 2：协议 + 查询 + 订阅推送） ===\n");
     ThreadPool *pool = threadpool_create(3);
 
-    for (int i = 0; i < MAX_CLIENTS; i++) clients[i].fd = -1;   // 初始化客户端槽位
+    for (int i = 0; i < MAX_CLIENTS; i++) clients[i].fd = -1;
 
     while (1)
     {
@@ -257,7 +251,7 @@ int main()
         {
             int fd = events[i].data.fd;
 
-            // 【分支 A】串口有动静：读传感器帧 -> 落库
+            // 【分支 A】串口有动静
             if (fd == serial_fd)
             {
                 for (;;)
@@ -266,7 +260,7 @@ int main()
                     int len = serial_read(buf, sizeof(buf));
                     if (len < 0)
                     {
-                        if (errno == EAGAIN || errno == EWOULDBLOCK) break; // 读干了，ET 下必须 break，否则死循环 CPU 100%
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) break;
                         perror("串口读出错");
                         break;
                     }
@@ -274,7 +268,7 @@ int main()
 
                     if (serial_rx_len + len > (int)sizeof(serial_rx_buf))
                     {
-                        serial_rx_len = 0;   // 防溢出
+                        serial_rx_len = 0;
                     }
                     memcpy(serial_rx_buf + serial_rx_len, buf, len);
                     serial_rx_len += len;
@@ -322,7 +316,6 @@ int main()
                     }
                 }
             }
-
             // 【分支 B】新客户端连进来
             else if (fd == listen_fd)
             {
@@ -352,22 +345,19 @@ int main()
                     epoll_ctl(epfd, EPOLL_CTL_ADD, c_fd, &ev);
                 }
             }
-
-            // 【分支 C】周期推送定时器到点：给订阅客户端推最新数据
+            // 【分支 C】周期推送定时器到点
             else if (fd == timer_fd)
             {
                 uint64_t exp;
-                while (read(timer_fd, &exp, sizeof(exp)) > 0) {}   // 排空（ET 下要读到 EAGAIN）
+                while (read(timer_fd, &exp, sizeof(exp)) > 0) {}
                 push_latest_to_subscribers();
             }
-
             // 【分支 D】已连接的客户端发消息
             else
             {
                 ClientContext *ctx = find_client(fd);
                 if (ctx == NULL)
                 {
-                    // 防御性兜底：fd 既然在 epoll 里，就该有对应槽位
                     epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
                     close(fd);
                     continue;
@@ -380,7 +370,6 @@ int main()
 
                     if (len > 0)
                     {
-
                         if (ctx->buf_len + len > (int)sizeof(ctx->recv_buf))
                         {
                             ctx->buf_len = 0;
@@ -415,7 +404,6 @@ int main()
                                 }
                                 else
                                 {
-                                    // 查询类：丢线程池异步执行（耗时的解析/查库不阻塞 epoll 主循环）
                                     QueryTaskArgs *args = (QueryTaskArgs *)malloc(sizeof(QueryTaskArgs));
                                     if (args != NULL)
                                     {

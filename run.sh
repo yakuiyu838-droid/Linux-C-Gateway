@@ -8,7 +8,8 @@ SOCAT_PID=""
 SIM_PID=""
 
 # 退出时（含 Ctrl+C）自动清理后台进程和临时软链接
-cleanup() {
+cleanup() 
+{
     echo ""
     echo "=== 清理中 ==="
     [ -n "$SIM_PID" ] && kill "$SIM_PID" 2>/dev/null
