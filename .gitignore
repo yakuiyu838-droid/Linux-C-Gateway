@@ -3,3 +3,5 @@ gateway
 client
 sensor_sim
 gateway.db
+*.db-shm
+*.db-wal
