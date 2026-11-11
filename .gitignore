@@ -2,6 +2,7 @@
 gateway
 client
 sensor_sim
+stress
 gateway.db
 *.db-shm
 *.db-wal

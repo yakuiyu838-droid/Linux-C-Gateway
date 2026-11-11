@@ -67,7 +67,19 @@ ThreadPool* threadpool_create(int thread_count)
     // 4. 正式招聘：循环创建 thread_count 个线程，让他们去跑 worker_routine
     for (int i = 0; i < thread_count; i++)
     {
-        pthread_create(&pool->threads[i], NULL, worker_routine, pool);
+        if (pthread_create(&pool->threads[i], NULL, worker_routine, pool) != 0)
+        {
+            // 创建失败：让已创建的线程退出、join 回收，再释放资源，返回 NULL
+            pool->stop = 1;
+            pthread_cond_broadcast(&pool->cond);
+            for (int j = 0; j < i; j++)
+                pthread_join(pool->threads[j], NULL);
+            pthread_mutex_destroy(&pool->mutex);
+            pthread_cond_destroy(&pool->cond);
+            free(pool->threads);
+            free(pool);
+            return NULL;
+        }
     }
     return pool;
 }
@@ -77,6 +89,7 @@ void threadpool_add_task(ThreadPool *pool, void (*func)(void *), void *arg)
 {
     // 1. 写一张任务纸条（申请任务节点内存）
     Task *task = (Task *)malloc(sizeof(Task));
+    if (task == NULL) return;   // 内存不足，丢弃任务，避免后续解引用 NULL 崩溃
     task->function = func;
     task->arg = arg;
     task->next = NULL;
@@ -103,7 +116,7 @@ void threadpool_add_task(ThreadPool *pool, void (*func)(void *), void *arg)
 }
 
 // 销毁线程池
-void threadpool_destroy(ThreadPool *pool)
+void threadpool_destroy(ThreadPool *pool, void (*cleanup)(void *arg))
 {
     // 如果公司（pool）根本不存在，那就别瞎折腾了，直接退出。
     if (!pool) return;
@@ -119,6 +132,17 @@ void threadpool_destroy(ThreadPool *pool)
     for (int i = 0; i < pool->thread_count; i++)
     {
         pthread_join(pool->threads[i], NULL);
+    }
+
+    // 3.5 worker 退出时如果队列里还有没处理完的任务（纸条），这里清掉，
+    //     并调用 cleanup 释放任务参数，避免优雅退出时内存泄漏
+    Task *t = pool->head;
+    while (t)
+    {
+        Task *next = t->next;
+        if (cleanup) cleanup(t->arg);
+        free(t);
+        t = next;
     }
 
     // 4. 销毁门锁、传呼机，退租办公室（释放所有内存）

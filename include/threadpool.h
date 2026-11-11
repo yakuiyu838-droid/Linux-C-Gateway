@@ -26,6 +26,7 @@ typedef struct ThreadPool
 // 核心接口
 ThreadPool* threadpool_create(int thread_count);
 void threadpool_add_task(ThreadPool *pool, void (*func)(void *), void *arg);
-void threadpool_destroy(ThreadPool *pool);
+// cleanup: 销毁时对「队列里还没跑完的任务」的参数做释放（如传 free）；传 NULL 则不释放
+void threadpool_destroy(ThreadPool *pool, void (*cleanup)(void *arg));
 
 #endif

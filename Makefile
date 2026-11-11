@@ -3,17 +3,18 @@ CC = gcc
 CFLAGS = -Wall -Wextra -g -Iinclude -Ithird_party
 LDLIBS = -lm    # cJSON 用到 sqrt/fabs，链接需要 libm
 
-# 网关：排除 sensor_sim.c（独立模拟器）和 client.c（独立客户端），两者都自带 main()
-SRCS = $(filter-out src/sensor_sim.c src/client.c, $(wildcard src/*.c)) $(wildcard third_party/*.c)
+# 网关：排除自带 main() 的独立程序（模拟器/客户端/压测客户端）
+SRCS = $(filter-out src/sensor_sim.c src/client.c src/stress.c, $(wildcard src/*.c)) $(wildcard third_party/*.c)
 # 把 .c 替换成 .o 目标文件
 OBJS = $(SRCS:.c=.o)
 
 TARGET = gateway
 SIM    = sensor_sim
 CLIENT = client
+STRESS = stress
 
-# 默认编译全部三个可执行文件
-all: $(TARGET) $(SIM) $(CLIENT)
+# 默认编译全部四个可执行文件
+all: $(TARGET) $(SIM) $(CLIENT) $(STRESS)
 
 # 网关主程序（epoll + 串口 + 网络 + 线程池 + 协议）
 $(TARGET): $(OBJS)
@@ -28,9 +29,13 @@ $(SIM): src/sensor_sim.c src/proto.c third_party/cJSON.c
 $(CLIENT): src/client.c src/proto.c third_party/cJSON.c
 	$(CC) $(CFLAGS) src/client.c src/proto.c third_party/cJSON.c -o $@ $(LDLIBS)
 
+# 压测客户端（独立程序，不用 cJSON，只需要协议组帧/拆帧）
+$(STRESS): src/stress.c src/proto.c
+	$(CC) $(CFLAGS) src/stress.c src/proto.c -o $@ $(LDLIBS) -lpthread
+
 # 自动推导规则：把所有的 .c 编译成 .o
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(OBJS) $(TARGET) $(SIM) $(CLIENT)
+	rm -f $(OBJS) $(TARGET) $(SIM) $(CLIENT) $(STRESS)

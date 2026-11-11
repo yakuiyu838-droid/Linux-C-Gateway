@@ -65,7 +65,7 @@ int main()
         return -1;
     }
     printf("✅ 成功连接到网关 %s:%d\n", SERVER_IP, PORT);
-    printf("指令：\n  latest       查最新一条\n  history [N]  查最近 N 条\n  subscribe    订阅周期推送（Ctrl+C 退出）\n  exit         退出\n");
+    printf("指令：\n  latest       查最新一条\n  history [N]  查最近 N 条\n  subscribe    订阅周期推送（Ctrl+C 退出）\n  control <设备> <on|off>  控制继电器/LED（如 relay1 on）\n  exit         退出\n");
 
     char input[256];
     while (1)
@@ -133,9 +133,32 @@ int main()
                 }
             }
         }
+        else if (strncmp(input, "control", 7) == 0)
+        {
+            char dev[64], act[16];
+            if (sscanf(input, "control %63s %15s", dev, act) == 2)
+            {
+                cJSON *root = cJSON_CreateObject();
+                cJSON_AddStringToObject(root, "device", dev);
+                cJSON_AddStringToObject(root, "action", act);
+                char *json_str = cJSON_PrintUnformatted(root);
+                send_cmd(TYPE_CONTROL, json_str);
+                cJSON_free(json_str);
+                cJSON_Delete(root);
+
+                if (recv_frame(&type, (char *)json_payload, &json_len) > 0)
+                    printf("📥 控制结果：%s\n", json_payload);
+                else
+                    printf("❌ 接收响应失败\n");
+            }
+            else
+            {
+                printf("❌ 用法：control <设备> <on|off>，例如 control relay1 on\n");
+            }
+        }
         else
         {
-            printf("❌ 未知指令，请输入 latest / history [N] / subscribe / exit\n");
+            printf("❌ 未知指令，请输入 latest / history [N] / subscribe / control / exit\n");
         }
     }
 

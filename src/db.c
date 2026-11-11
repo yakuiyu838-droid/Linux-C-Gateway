@@ -3,6 +3,9 @@
 #include <string.h>
 #include "cJSON.h"
 
+// 说明：sqlite3 amalgamation 默认以 SQLITE_THREADSAFE=1（serialized 串行化）编译，
+// 单个连接被多个线程并发使用是安全的（SQLite 内部会加锁串行化）。代价是并发查询会被排队，
+// 追求更高并发时更优做法是「每线程一个连接」；本项目查询量小，单连接够用。
 sqlite3 *g_db = NULL;
 
 int db_init(const char *db_name)
@@ -95,6 +98,11 @@ int db_get_history(int limit, char *out_json, int max_len)
 
     // 转成字符串，拷贝给你
     char *json_str = cJSON_PrintUnformatted(array);
+    if (json_str == NULL)   // 内存不足时 cJSON 可能返回 NULL，直接返回避免 strncpy(NULL) 崩溃
+    {
+        cJSON_Delete(array);
+        return -1;
+    }
     strncpy(out_json, json_str, max_len - 1);
     out_json[max_len - 1] = '\0';   // 手动补 '\0'，防止 json 超长时 strncpy 不结尾
 
